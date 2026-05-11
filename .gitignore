@@ -1,0 +1,11 @@
+build/
+externals/
+libs/
+good_models/
+model/
+scripts/__pycache__/
+.DS_Store
+*.mxo
+*.dylib
+*.so
+*.a
