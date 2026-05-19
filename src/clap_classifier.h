@@ -3,6 +3,7 @@
 #define CLAP_TILDE_CLAP_CLASSIFIER_H
 
 #include <algorithm>
+#include <cmath>
 #include <functional>
 #include <map>
 #include <mutex>
@@ -83,6 +84,11 @@ public:
         m_pending_audio.push_back({label, std::move(audio_samples)});
     }
 
+    void queue_audio_examples_batch(const std::string& label, std::vector<std::vector<float>> batch) {
+        std::lock_guard<std::mutex> lock{m_class_mutex};
+        m_pending_audio_batches.push_back({label, std::move(batch)});
+    }
+
     void clear_audio_examples(const std::string& label = "") {
         std::lock_guard<std::mutex> lock{m_class_mutex};
         if (label.empty()) {
@@ -101,8 +107,16 @@ public:
         apply_pending_classes();
         apply_pending_audio();
 
-        auto [combined_embs, combined_names] = build_combined();
-        if (combined_names.empty() || combined_embs.empty()) return std::nullopt;
+        if (m_combined_dirty) {
+            auto [embs, names] = build_combined();
+            m_cached_combined_embs  = std::move(embs);
+            m_cached_combined_names = std::move(names);
+            m_combined_dirty = false;
+        }
+        if (m_cached_combined_names.empty() || m_cached_combined_embs.empty()) return std::nullopt;
+
+        const auto& combined_embs  = m_cached_combined_embs;
+        const auto& combined_names = m_cached_combined_names;
 
         int num_classes = static_cast<int>(combined_names.size());
 
@@ -191,11 +205,13 @@ private:
                 m_text_embeddings = m_model->encode_text(names);
                 m_text_class_names = std::move(names);
             }
+            m_combined_dirty = true;
         }
     }
 
     void apply_pending_audio() {
         std::vector<PendingAudio> pending;
+        std::vector<PendingAudioBatch> pending_batches;
         bool clear_all = false;
         std::vector<std::string> clear_labels;
 
@@ -209,20 +225,53 @@ private:
             m_clear_labels.clear();
             pending = std::move(m_pending_audio);
             m_pending_audio.clear();
+            pending_batches = std::move(m_pending_audio_batches);
+            m_pending_audio_batches.clear();
         }
 
         if (clear_all) {
-            m_audio_examples.clear();
+            if (!m_audio_examples.empty()) {
+                m_audio_examples.clear();
+                m_combined_dirty = true;
+            }
         } else {
-            for (const auto& lbl : clear_labels)
-                m_audio_examples.erase(lbl);
+            for (const auto& lbl : clear_labels) {
+                if (m_audio_examples.erase(lbl) > 0)
+                    m_combined_dirty = true;
+            }
         }
 
         if (!m_model) return;
+
         for (auto& p : pending) {
             auto emb = m_model->encode_audio(std::move(p.audio));  // [512]
-            if (!emb.empty())
+            if (!emb.empty()) {
                 m_audio_examples[p.label] = std::move(emb);
+                m_combined_dirty = true;
+            }
+        }
+
+        for (auto& batch : pending_batches) {
+            constexpr std::size_t EMB_DIM = 512;
+            std::vector<float> avg(EMB_DIM, 0.0f);
+            int count = 0;
+            for (auto& audio : batch.audio_samples) {
+                auto emb = m_model->encode_audio(std::move(audio));
+                if (emb.size() == EMB_DIM) {
+                    for (std::size_t i = 0; i < EMB_DIM; ++i) avg[i] += emb[i];
+                    ++count;
+                }
+            }
+            if (count > 0) {
+                float inv = 1.0f / static_cast<float>(count);
+                for (auto& v : avg) v *= inv;
+                float norm = 0.0f;
+                for (auto v : avg) norm += v * v;
+                norm = std::sqrt(norm);
+                if (norm > 1e-8f) for (auto& v : avg) v /= norm;
+                m_audio_examples[batch.label] = std::move(avg);
+                m_combined_dirty = true;
+            }
         }
     }
 
@@ -255,7 +304,6 @@ private:
             }
         }
 
-        m_cached_combined_names = names;
         return {std::move(combined), std::move(names)};
     }
 
@@ -276,14 +324,18 @@ private:
     std::vector<std::string>                  m_text_class_names;
     std::map<std::string, std::vector<float>> m_audio_examples;    // label → [512]
     std::vector<std::string>                  m_cached_combined_names;
+    std::vector<float>                        m_cached_combined_embs;
+    bool                                      m_combined_dirty = true;
 
     std::mutex               m_class_mutex;
     std::vector<std::string> m_pending_classes;
     bool                     m_classes_pending  = false;
     bool                     m_classes_additive = false;
 
-    struct PendingAudio { std::string label; std::vector<float> audio; };
-    std::vector<PendingAudio> m_pending_audio;
+    struct PendingAudio      { std::string label; std::vector<float> audio; };
+    struct PendingAudioBatch { std::string label; std::vector<std::vector<float>> audio_samples; };
+    std::vector<PendingAudio>      m_pending_audio;
+    std::vector<PendingAudioBatch> m_pending_audio_batches;
     bool m_clear_all_examples = false;
     std::vector<std::string> m_clear_labels;
 

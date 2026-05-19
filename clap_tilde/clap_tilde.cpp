@@ -441,6 +441,74 @@ public:
         }
     };
 
+    // record_multi <label> <polybuffer_name>  (send to inlet 2)
+    // Reads every slot of a polybuffer~ (<name>.1, <name>.2, …), encodes each as an audio
+    // embedding, averages them, and registers the mean as the prototype for the given label.
+    message<> record_multi_msg{this, "record_multi",
+        "record_multi <label> <polybuffer_name> — register a few-shot prototype by averaging all slots of a polybuffer~.",
+        MIN_FUNCTION {
+            if (inlet != 1) {
+                cerr << "[clap~] record_multi: send to inlet 2" << endl;
+                return {};
+            }
+            if (args.size() < 2) {
+                cerr << "[clap~] record_multi: usage: record_multi <label> <polybuffer_name>" << endl;
+                return {};
+            }
+            if (!m_running) {
+                cerr << "[clap~] record_multi: model not loaded yet" << endl;
+                return {};
+            }
+
+            auto label     = std::string(args[0]);
+            auto poly_name = std::string(args[1]);
+            constexpr int MODEL_SR = 48000;
+
+            std::vector<std::vector<float>> batch;
+            for (int idx = 1; ; ++idx) {
+                auto slot_name = poly_name + "." + std::to_string(idx);
+                m_record_buf.set(slot_name);
+                buffer_lock<> lock{m_record_buf};
+                if (!lock.valid()) break;
+
+                auto frames   = static_cast<int>(lock.frame_count());
+                auto channels = static_cast<int>(lock.channel_count());
+                auto buf_sr   = lock.samplerate();
+
+                std::vector<float> raw(static_cast<std::size_t>(frames));
+                for (int f = 0; f < frames; ++f)
+                    raw[static_cast<std::size_t>(f)] =
+                        static_cast<float>(lock[static_cast<size_t>(f * channels)]);
+
+                std::vector<float> samples;
+                if (static_cast<int>(buf_sr) != MODEL_SR && buf_sr > 0) {
+                    std::vector<double> src_d(raw.begin(), raw.end());
+                    r8b::CDSPResampler24 rs(buf_sr, MODEL_SR, frames);
+                    double* dst_ptr = nullptr;
+                    int got = rs.process(src_d.data(), frames, dst_ptr);
+                    samples.resize(static_cast<std::size_t>(got));
+                    for (int i = 0; i < got; ++i)
+                        samples[static_cast<std::size_t>(i)] = static_cast<float>(dst_ptr[i]);
+                } else {
+                    samples = std::move(raw);
+                }
+
+                batch.push_back(std::move(samples));
+            }
+
+            if (batch.empty()) {
+                cerr << "[clap~] record_multi: no buffers found in polybuffer~ \""
+                     << poly_name << "\"" << endl;
+                return {};
+            }
+
+            cout << "[clap~] record_multi: queued " << batch.size()
+                 << " example(s) for label \"" << label << "\"" << endl;
+            m_classifier->queue_audio_examples_batch(label, std::move(batch));
+            return {};
+        }
+    };
+
     // clear_examples  — remove all recorded audio examples (send to either inlet)
     message<> clear_examples{this, "clear_examples",
         "Remove all recorded few-shot audio examples.",
