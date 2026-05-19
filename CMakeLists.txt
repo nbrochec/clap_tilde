@@ -6,22 +6,10 @@ set(CMAKE_OSX_ARCHITECTURES arm64)
 include(FetchContent)
 
 # ── r8brain ───────────────────────────────────────────────────────────────────
-set(IPT_R8BRAIN "${CMAKE_CURRENT_SOURCE_DIR}/../ipt_tilde/libs/r8brain")
-if(EXISTS "${IPT_R8BRAIN}/CMakeLists.txt")
-    message(STATUS "Reusing r8brain from ipt_tilde")
-    add_subdirectory("${IPT_R8BRAIN}" "${CMAKE_BINARY_DIR}/r8brain")
-else()
-    add_subdirectory(libs/r8brain)
-endif()
+add_subdirectory(libs/r8brain)
 
 # ── min-api ───────────────────────────────────────────────────────────────────
-set(IPT_MIN_API "${CMAKE_CURRENT_SOURCE_DIR}/../ipt_tilde/min-api")
-if(EXISTS "${IPT_MIN_API}/script/min-package.cmake")
-    message(STATUS "Reusing min-api from ipt_tilde")
-    set(C74_MIN_API_DIR "${IPT_MIN_API}")
-else()
-    set(C74_MIN_API_DIR "${CMAKE_CURRENT_SOURCE_DIR}/min-api")
-endif()
+set(C74_MIN_API_DIR "${CMAKE_CURRENT_SOURCE_DIR}/min-api")
 
 include(${C74_MIN_API_DIR}/script/min-package.cmake)
 set(C74_LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/externals")
