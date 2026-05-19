@@ -9,4 +9,3 @@ scripts/__pycache__/
 *.dylib
 *.so
 *.a
-*.maxpat
